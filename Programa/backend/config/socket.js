@@ -1,12 +1,19 @@
 // config/socket.js
 const Game = require("../models/Game");
 const GameLogic = require("../game/GameLogic");
+const GameDebugger = require("../utils/GameDebugger");
 
 class SocketService {
-  constructor(io) {
+  constructor(io, app) {
     this.io = io;
-    this.gameRooms = new Map(); // Almacena información de las salas activas
-    this.activeGames = new Map(); // Almacena las instancias de GameLogic
+    this.gameRooms = new Map();
+    this.activeGames = new Map();
+    this.debugger = new GameDebugger(io);
+
+    // Configurar endpoints de debug
+    if (process.env.NODE_ENV === "development") {
+      this.debugger.setupDebugEndpoints(app, this.activeGames);
+    }
   }
 
   init() {
@@ -126,6 +133,20 @@ class SocketService {
     });
   }
 
+  async processTurn(gameId, from, to, playerIndex) {
+    const gameLogic = this.activeGames.get(gameId);
+    if (!gameLogic) return false;
+
+    const result = gameLogic.processTurn(from, to, playerIndex);
+
+    if (result.success) {
+      this.debugger.logMove(gameId, from, to, playerIndex);
+      this.debugger.logBoardState(gameId, gameLogic.getBoardState().board);
+    }
+
+    return result;
+  }
+
   // Inicializar el juego
   async initializeGame(gameId) {
     try {
@@ -135,6 +156,12 @@ class SocketService {
       // Crear instancia de GameLogic
       const gameLogic = new GameLogic(game.maxPlayers);
       this.activeGames.set(gameId, gameLogic);
+
+      this.debugger.logEvent(gameId, "initialize", {
+        numPlayers: game.maxPlayers,
+        players: game.players,
+      });
+      this.debugger.logBoardState(gameId, gameLogic.getBoardState().board);
 
       // Asignar turnos aleatoriamente
       const players = game.players.map((player) => ({
@@ -161,6 +188,7 @@ class SocketService {
         message: "Todos los jugadores han tirado los dados",
       });
     } catch (error) {
+      this.debugger.logEvent(gameId, "error", error.message);
       this.io.to(gameId).emit("error", { message: error.message });
     }
   }
