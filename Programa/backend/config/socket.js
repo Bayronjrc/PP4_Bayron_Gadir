@@ -1,10 +1,12 @@
 // config/socket.js
 const Game = require("../models/Game");
+const GameLogic = require("../game/GameLogic");
 
 class SocketService {
   constructor(io) {
     this.io = io;
     this.gameRooms = new Map(); // Almacena información de las salas activas
+    this.activeGames = new Map(); // Almacena las instancias de GameLogic
   }
 
   init() {
@@ -21,23 +23,25 @@ class SocketService {
           }
 
           socket.join(gameId);
-          this.gameRooms.set(gameId, {
-            ...this.gameRooms.get(gameId),
-            [socket.id]: { nickname, ready: false },
-          });
 
-          // Notificar a todos en la sala que un nuevo jugador se unió
+          // Almacenar información del jugador en la sala
+          const gameRoom = this.gameRooms.get(gameId) || {};
+          gameRoom[socket.id] = {
+            nickname,
+            ready: false,
+            playerIndex: game.players.findIndex((p) => p.nickname === nickname),
+          };
+          this.gameRooms.set(gameId, gameRoom);
+
+          // Notificar a todos en la sala
           this.io.to(gameId).emit("playerJoined", {
             nickname,
             players: game.players,
             message: `${nickname} se unió a la partida`,
           });
 
-          // Si todos los jugadores están conectados, iniciar el proceso de inicio
-          if (
-            Object.keys(this.gameRooms.get(gameId) || {}).length ===
-            game.maxPlayers
-          ) {
+          // Si todos los jugadores están conectados, iniciar proceso
+          if (Object.keys(gameRoom).length === game.maxPlayers) {
             this.initializeGame(gameId);
           }
         } catch (error) {
@@ -62,34 +66,57 @@ class SocketService {
         }
       });
 
-      // Manejar movimiento de ficha
-      socket.on("movePiece", ({ gameId, from, to, nickname }) => {
-        // Validar el movimiento aquí
-        if (this.isValidMove(gameId, from, to)) {
-          // Actualizar el estado del juego
-          this.updateGameState(gameId, from, to);
+      // Solicitar movimientos válidos
+      socket.on("getValidMoves", ({ gameId, position }) => {
+        const gameLogic = this.activeGames.get(gameId);
+        const gameRoom = this.gameRooms.get(gameId);
 
+        if (gameLogic && gameRoom[socket.id]) {
+          const playerIndex = gameRoom[socket.id].playerIndex;
+          const validMoves = gameLogic.getValidMoves(position);
+
+          socket.emit("validMoves", {
+            position,
+            moves: validMoves,
+          });
+        }
+      });
+
+      // Manejar movimiento de ficha
+      socket.on("movePiece", ({ gameId, from, to }) => {
+        const gameLogic = this.activeGames.get(gameId);
+        const gameRoom = this.gameRooms.get(gameId);
+
+        if (!gameLogic || !gameRoom[socket.id]) {
+          socket.emit("error", { message: "Juego no encontrado" });
+          return;
+        }
+
+        const playerIndex = gameRoom[socket.id].playerIndex;
+        const result = gameLogic.processTurn(from, to, playerIndex);
+
+        if (result.success) {
           // Emitir el movimiento a todos los jugadores
           this.io.to(gameId).emit("pieceMove", {
             from,
             to,
-            nickname,
+            player: playerIndex,
+            boardState: gameLogic.getBoardState(),
           });
 
-          // Cambiar el turno
-          this.nextTurn(gameId);
+          if (result.gameOver) {
+            // Manejar victoria
+            this.handleGameOver(gameId, result.winner);
+          } else {
+            // Cambiar turno
+            this.io.to(gameId).emit("turnChange", {
+              currentPlayer: result.nextPlayer,
+              message: `Turno del jugador ${result.nextPlayer + 1}`,
+            });
+          }
         } else {
-          socket.emit("error", { message: "Movimiento inválido" });
+          socket.emit("error", { message: result.message });
         }
-      });
-
-      // Manejar chat del juego
-      socket.on("gameMessage", ({ gameId, nickname, message }) => {
-        this.io.to(gameId).emit("gameMessage", {
-          nickname,
-          message,
-          timestamp: new Date(),
-        });
       });
 
       // Manejar desconexión
@@ -105,6 +132,10 @@ class SocketService {
       const game = await Game.findOne({ gameId });
       if (!game) return;
 
+      // Crear instancia de GameLogic
+      const gameLogic = new GameLogic(game.maxPlayers);
+      this.activeGames.set(gameId, gameLogic);
+
       // Asignar turnos aleatoriamente
       const players = game.players.map((player) => ({
         ...player,
@@ -119,13 +150,14 @@ class SocketService {
         return b.diceRoll - a.diceRoll;
       });
 
-      // Actualizar el orden de los jugadores en la base de datos
+      // Actualizar el orden de los jugadores
       game.players = players;
       await game.save();
 
-      // Notificar a todos los jugadores el resultado de los dados
+      // Notificar a todos los jugadores
       this.io.to(gameId).emit("gameInitialized", {
         players: players,
+        boardState: gameLogic.getBoardState(),
         message: "Todos los jugadores han tirado los dados",
       });
     } catch (error) {
@@ -135,38 +167,37 @@ class SocketService {
 
   // Iniciar el juego
   startGame(gameId) {
+    const gameLogic = this.activeGames.get(gameId);
+    const initialState = gameLogic.getBoardState();
+
     this.io.to(gameId).emit("gameStarted", {
       message: "¡El juego ha comenzado!",
-      currentTurn: this.gameRooms.get(gameId)[0]?.nickname,
+      boardState: initialState,
+      currentPlayer: initialState.currentPlayer,
     });
   }
 
-  // Validar movimiento
-  isValidMove(gameId, from, to) {
-    // Implementar la lógica de validación de movimientos aquí
-    return true; // Placeholder
-  }
+  // Manejar fin del juego
+  async handleGameOver(gameId, winner) {
+    try {
+      const game = await Game.findOne({ gameId });
+      if (!game) return;
 
-  // Actualizar estado del juego
-  updateGameState(gameId, from, to) {
-    // Implementar la lógica de actualización del estado aquí
-  }
+      game.status = "finished";
+      game.winner = game.players[winner].nickname;
+      await game.save();
 
-  // Cambiar turno
-  nextTurn(gameId) {
-    const gameRoom = this.gameRooms.get(gameId);
-    if (!gameRoom) return;
+      this.io.to(gameId).emit("gameOver", {
+        winner: game.players[winner].nickname,
+        message: `¡${game.players[winner].nickname} ha ganado!`,
+      });
 
-    const players = Object.values(gameRoom);
-    const currentPlayerIndex = players.findIndex((p) => p.isCurrentTurn);
-    const nextPlayerIndex = (currentPlayerIndex + 1) % players.length;
-
-    // Actualizar turnos
-    players.forEach((p, i) => (p.isCurrentTurn = i === nextPlayerIndex));
-
-    this.io.to(gameId).emit("turnChange", {
-      currentPlayer: players[nextPlayerIndex].nickname,
-    });
+      // Limpiar recursos
+      this.activeGames.delete(gameId);
+      this.gameRooms.delete(gameId);
+    } catch (error) {
+      this.io.to(gameId).emit("error", { message: error.message });
+    }
   }
 
   // Manejar desconexión de jugadores
@@ -181,6 +212,7 @@ class SocketService {
 
         if (Object.keys(room).length === 0) {
           this.gameRooms.delete(gameId);
+          this.activeGames.delete(gameId);
         } else {
           this.gameRooms.set(gameId, room);
           this.io.to(gameId).emit("playerLeft", {
