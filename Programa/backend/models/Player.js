@@ -1,11 +1,14 @@
 const mongoose = require("mongoose");
 
-const PlayerSchema = new mongoose.Schema({
+const playerSchema = new mongoose.Schema({
   nickname: {
     type: String,
     required: true,
-    unique: true,
   },
+  color: String,
+  order: Number,
+  diceRoll: Number,
+  playerIndex: Number,
   gamesWon: {
     type: Number,
     default: 0,
@@ -20,4 +23,4 @@ const PlayerSchema = new mongoose.Schema({
   },
 });
 
-module.exports = mongoose.model("Player", PlayerSchema);
+module.exports = mongoose.model("Player", playerSchema);

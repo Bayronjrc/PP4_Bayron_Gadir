@@ -1,6 +1,18 @@
 const mongoose = require("mongoose");
 
-const GameSchema = new mongoose.Schema({
+// models/Game.js
+const playerSchema = new mongoose.Schema({
+  nickname: {
+    type: String,
+    required: true,
+  },
+  color: String,
+  order: Number,
+  diceRoll: Number,
+  playerIndex: Number,
+});
+
+const gameSchema = new mongoose.Schema({
   gameId: {
     type: String,
     required: true,
@@ -10,32 +22,22 @@ const GameSchema = new mongoose.Schema({
     type: String,
     required: true,
   },
-  players: [
-    {
-      nickname: String,
-      color: String,
-      order: Number,
-    },
-  ],
   maxPlayers: {
     type: Number,
     required: true,
     enum: [2, 3, 4, 6],
   },
+  players: [playerSchema],
   status: {
     type: String,
-    enum: ["waiting", "playing", "finished", "cancelled"],
+    enum: ["waiting", "playing", "finished"],
     default: "waiting",
   },
-  winner: {
-    type: String,
-    default: null,
-  },
+  winner: String,
   createdAt: {
     type: Date,
     default: Date.now,
-    expires: 180, // El documento se eliminará después de 3 minutos si no se inicia
   },
 });
 
-module.exports = mongoose.model("Game", GameSchema);
+module.exports = mongoose.model("Game", gameSchema);

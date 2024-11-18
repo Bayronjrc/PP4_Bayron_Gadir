@@ -31,13 +31,19 @@ class SocketService {
 
           socket.join(gameId);
 
-          // Almacenar información del jugador en la sala
-          const gameRoom = this.gameRooms.get(gameId) || {};
-          gameRoom[socket.id] = {
+          // Inicializar o actualizar información de la sala
+          const gameRoom = this.gameRooms.get(gameId) || {
+            players: new Map(),
+            readyPlayers: new Set(),
+          };
+
+          // Almacenar información del jugador
+          gameRoom.players.set(socket.id, {
             nickname,
             ready: false,
             playerIndex: game.players.findIndex((p) => p.nickname === nickname),
-          };
+          });
+
           this.gameRooms.set(gameId, gameRoom);
 
           // Notificar a todos en la sala
@@ -47,85 +53,141 @@ class SocketService {
             message: `${nickname} se unió a la partida`,
           });
 
-          // Si todos los jugadores están conectados, iniciar proceso
-          if (Object.keys(gameRoom).length === game.maxPlayers) {
-            this.initializeGame(gameId);
-          }
+          console.log(`${nickname} se unió a la partida ${gameId}`);
         } catch (error) {
+          console.error("Error en joinGame:", error);
           socket.emit("error", { message: error.message });
         }
       });
 
       // Jugador listo para comenzar
-      socket.on("playerReady", ({ gameId }) => {
-        const gameRoom = this.gameRooms.get(gameId);
-        if (gameRoom && gameRoom[socket.id]) {
-          gameRoom[socket.id].ready = true;
+      socket.on("playerReady", async ({ gameId, nickname, isHost }) => {
+        try {
+          const game = await Game.findOne({ gameId });
+          if (!game) {
+            socket.emit("error", { message: "Partida no encontrada" });
+            return;
+          }
+
+          const gameRoom = this.gameRooms.get(gameId);
+          if (!gameRoom) {
+            socket.emit("error", { message: "Sala no encontrada" });
+            return;
+          }
+
+          // Marcar jugador como listo
+          gameRoom.readyPlayers.add(nickname);
           this.gameRooms.set(gameId, gameRoom);
 
-          // Verificar si todos están listos
-          const allReady = Object.values(gameRoom).every(
-            (player) => player.ready
-          );
-          if (allReady) {
-            this.startGame(gameId);
+          // Notificar que el jugador está listo
+          this.io.to(gameId).emit("playerReady", {
+            nickname,
+            message: `${nickname} está listo`,
+          });
+
+          console.log(`${nickname} está listo en la partida ${gameId}`);
+          console.log("Jugadores listos:", [...gameRoom.readyPlayers]);
+
+          // Si es el host y todos están listos, iniciar el juego
+          if (isHost && game.creator === nickname) {
+            const allPlayersReady = game.players
+              .filter((player) => player.nickname !== game.creator)
+              .every((player) => gameRoom.readyPlayers.has(player.nickname));
+
+            if (allPlayersReady) {
+              console.log("Todos los jugadores están listos, iniciando juego");
+              await this.initializeGame(gameId);
+            } else {
+              console.log("Esperando a que todos los jugadores estén listos");
+              socket.emit("error", {
+                message: "No todos los jugadores están listos",
+              });
+            }
           }
+        } catch (error) {
+          console.error("Error en playerReady:", error);
+          socket.emit("error", { message: error.message });
         }
       });
 
       // Solicitar movimientos válidos
       socket.on("getValidMoves", ({ gameId, position }) => {
-        const gameLogic = this.activeGames.get(gameId);
-        const gameRoom = this.gameRooms.get(gameId);
+        try {
+          console.log(
+            `Solicitando movimientos válidos para posición ${position} en juego ${gameId}`
+          );
 
-        if (gameLogic && gameRoom[socket.id]) {
-          const playerIndex = gameRoom[socket.id].playerIndex;
+          const gameLogic = this.activeGames.get(gameId);
+          if (!gameLogic) {
+            throw new Error("Juego no encontrado");
+          }
+
           const validMoves = gameLogic.getValidMoves(position);
+          console.log(`Movimientos válidos encontrados:`, validMoves);
 
           socket.emit("validMoves", {
             position,
             moves: validMoves,
           });
+        } catch (error) {
+          console.error("Error al obtener movimientos válidos:", error);
+          socket.emit("error", { message: error.message });
         }
       });
 
       // Manejar movimiento de ficha
-      socket.on("movePiece", ({ gameId, from, to }) => {
-        const gameLogic = this.activeGames.get(gameId);
-        const gameRoom = this.gameRooms.get(gameId);
+      socket.on("movePiece", async ({ gameId, from, to, playerIndex }) => {
+        try {
+          const gameLogic = this.activeGames.get(gameId);
+          const gameRoom = this.gameRooms.get(gameId);
 
-        if (!gameLogic || !gameRoom[socket.id]) {
-          socket.emit("error", { message: "Juego no encontrado" });
-          return;
-        }
+          if (!gameLogic || !gameRoom?.players.get(socket.id)) {
+            socket.emit("error", { message: "Juego no encontrado" });
+            return;
+          }
 
-        const playerIndex = gameRoom[socket.id].playerIndex;
-        const result = gameLogic.processTurn(from, to, playerIndex);
-
-        if (result.success) {
-          // Emitir el movimiento a todos los jugadores
-          this.io.to(gameId).emit("pieceMove", {
+          console.log("Procesando movimiento:", {
+            gameId,
             from,
             to,
-            player: playerIndex,
-            boardState: gameLogic.getBoardState(),
+            playerIndex,
+            currentPlayer: gameLogic.currentPlayer,
           });
 
-          if (result.gameOver) {
-            // Manejar victoria
-            this.handleGameOver(gameId, result.winner);
-          } else {
-            // Cambiar turno
-            this.io.to(gameId).emit("turnChange", {
-              currentPlayer: result.nextPlayer,
-              message: `Turno del jugador ${result.nextPlayer + 1}`,
+          const result = gameLogic.processTurn(from, to, playerIndex);
+
+          if (result.success) {
+            const boardState = gameLogic.getBoardState();
+
+            // Emitir el movimiento a todos los jugadores
+            this.io.to(gameId).emit("pieceMove", {
+              from,
+              to,
+              player: playerIndex,
+              boardState: {
+                board: boardState.board,
+                currentPlayer: result.nextPlayer,
+              },
             });
+
+            // Verificar si hay un ganador
+            if (gameLogic.checkWin(playerIndex)) {
+              await this.handleGameOver(gameId, playerIndex);
+            } else {
+              // Emitir cambio de turno
+              this.io.to(gameId).emit("turnChange", {
+                currentPlayer: result.nextPlayer,
+                message: `Turno del jugador ${result.nextPlayer + 1}`,
+              });
+            }
+          } else {
+            socket.emit("error", { message: result.message });
           }
-        } else {
-          socket.emit("error", { message: result.message });
+        } catch (error) {
+          console.error("Error en movePiece:", error);
+          socket.emit("error", { message: error.message });
         }
       });
-
       // Manejar desconexión
       socket.on("disconnect", () => {
         this.handleDisconnect(socket);
@@ -151,44 +213,83 @@ class SocketService {
   async initializeGame(gameId) {
     try {
       const game = await Game.findOne({ gameId });
-      if (!game) return;
+      if (!game) {
+        throw new Error("Juego no encontrado");
+      }
 
-      // Crear instancia de GameLogic
-      const gameLogic = new GameLogic(game.maxPlayers);
-      this.activeGames.set(gameId, gameLogic);
+      // Mapeo de índices de jugadores según el número de jugadores
+      const playerConfigurations = {
+        2: [
+          { index: 0, color: "red" }, // Rojo arriba
+          { index: 2, color: "green" }, // Verde abajo
+        ],
+        3: [
+          { index: 0, color: "red" }, // Rojo arriba
+          { index: 1, color: "yellow" }, // Amarillo esquina inferior derecha
+          { index: 5, color: "orange" }, // Naranja esquina superior derecha
+        ],
+        4: [
+          { index: 0, color: "red" }, // Rojo arriba
+          { index: 1, color: "yellow" }, // Amarillo esquina inferior izquierda
+          { index: 2, color: "green" }, // Verde abajo
+          { index: 4, color: "purple" }, // Morado esquina superior izquierda
+        ],
+        6: [
+          { index: 0, color: "red" }, // Rojo arriba
+          { index: 1, color: "yellow" }, // Amarillo esquina inferior derecha
+          { index: 2, color: "green" }, // Verde abajo
+          { index: 3, color: "blue" }, // Azul esquina inferior izquierda
+          { index: 4, color: "purple" }, // Morado esquina superior izquierda
+          { index: 5, color: "orange" }, // Naranja esquina superior derecha
+        ],
+      };
 
-      this.debugger.logEvent(gameId, "initialize", {
-        numPlayers: game.maxPlayers,
-        players: game.players,
-      });
-      this.debugger.logBoardState(gameId, gameLogic.getBoardState().board);
+      // Obtener la configuración según el número de jugadores
+      const configuration = playerConfigurations[game.players.length];
+      if (!configuration) {
+        throw new Error(
+          `Configuración no válida para ${game.players.length} jugadores`
+        );
+      }
 
-      // Asignar turnos aleatoriamente
-      const players = game.players.map((player) => ({
-        ...player,
+      // Asignar dados y mapear jugadores a sus posiciones
+      const players = game.players.map((player, idx) => ({
+        nickname: player.nickname,
+        color: configuration[idx].color,
+        playerIndex: configuration[idx].index, // Usar el índice de la configuración
         diceRoll: Math.floor(Math.random() * 6) + 1,
       }));
 
-      // Ordenar por valor del dado y nickname en caso de empate
-      players.sort((a, b) => {
-        if (b.diceRoll === a.diceRoll) {
-          return a.nickname.localeCompare(b.nickname);
-        }
-        return b.diceRoll - a.diceRoll;
-      });
+      // Ordenar por valor del dado
+      players.sort((a, b) => b.diceRoll - a.diceRoll);
 
-      // Actualizar el orden de los jugadores
+      console.log("Jugadores inicializados:", players);
+
+      // Crear instancia de GameLogic con el modo de juego correcto
+      const gameLogic = new GameLogic(game.players.length, game.gameMode);
+      this.activeGames.set(gameId, gameLogic);
+
+      // Actualizar el juego en la base de datos
       game.players = players;
+      game.status = "playing";
       await game.save();
 
       // Notificar a todos los jugadores
-      this.io.to(gameId).emit("gameInitialized", {
-        players: players,
+      this.io.to(gameId).emit("gameStarted", {
+        players,
         boardState: gameLogic.getBoardState(),
-        message: "Todos los jugadores han tirado los dados",
+        currentPlayer: gameLogic.currentPlayer,
+        gameId,
+        activePlayerIndices: configuration.map((p) => p.index),
+      });
+
+      console.log(`Juego ${gameId} iniciado:`, {
+        players: players.map((p) => `${p.nickname} (${p.playerIndex})`),
+        currentPlayer: gameLogic.currentPlayer,
+        configuration: configuration.map((p) => p.index),
       });
     } catch (error) {
-      this.debugger.logEvent(gameId, "error", error.message);
+      console.error("Error al inicializar el juego:", error);
       this.io.to(gameId).emit("error", { message: error.message });
     }
   }
@@ -232,13 +333,14 @@ class SocketService {
   handleDisconnect(socket) {
     console.log("Cliente desconectado:", socket.id);
 
-    // Buscar y limpiar las salas donde estaba el jugador
     this.gameRooms.forEach((room, gameId) => {
-      if (room[socket.id]) {
-        const nickname = room[socket.id].nickname;
-        delete room[socket.id];
+      const playerInfo = room.players.get(socket.id);
+      if (playerInfo) {
+        const { nickname } = playerInfo;
+        room.players.delete(socket.id);
+        room.readyPlayers.delete(nickname);
 
-        if (Object.keys(room).length === 0) {
+        if (room.players.size === 0) {
           this.gameRooms.delete(gameId);
           this.activeGames.delete(gameId);
         } else {
