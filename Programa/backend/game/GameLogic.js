@@ -153,6 +153,76 @@ class GameLogic {
         activeOrder: [0, 1, 2, 3, 4, 5],
       },
     };
+    this.oppositeCorners = {
+      2: {
+        0: {
+          position: 2, // Rojo (arriba) -> Verde (abajo)
+          positions: this.board.structureToPositions.V,
+        },
+        2: {
+          position: 0, // Verde (abajo) -> Rojo (arriba)
+          positions: this.board.structureToPositions.R,
+        },
+      },
+      3: {
+        0: {
+          position: 2,
+          positions: this.board.structureToPositions.V,
+        },
+        1: {
+          position: 4,
+          positions: this.board.structureToPositions.N,
+        },
+        5: {
+          position: 3,
+          positions: this.board.structureToPositions.B,
+        },
+      },
+      4: {
+        0: {
+          position: 2,
+          positions: this.board.structureToPositions.V,
+        },
+        1: {
+          position: 4,
+          positions: this.board.structureToPositions.N,
+        },
+        2: {
+          position: 0,
+          positions: this.board.structureToPositions.R,
+        },
+        4: {
+          position: 1,
+          positions: this.board.structureToPositions.A,
+        },
+      },
+      6: {
+        0: {
+          position: 3,
+          positions: this.board.structureToPositions.B,
+        },
+        1: {
+          position: 4,
+          positions: this.board.structureToPositions.N,
+        },
+        2: {
+          position: 5,
+          positions: this.board.structureToPositions.C,
+        },
+        3: {
+          position: 0,
+          positions: this.board.structureToPositions.R,
+        },
+        4: {
+          position: 1,
+          positions: this.board.structureToPositions.A,
+        },
+        5: {
+          position: 2,
+          positions: this.board.structureToPositions.V,
+        },
+      },
+    };
 
     // Inicializar configuración según el número de jugadores
     this.initializeGameConfiguration();
@@ -214,19 +284,7 @@ class GameLogic {
   }
 
   getOppositeCorner(playerIndex) {
-    const config = this.playerConfigurations[this.numPlayers];
-    const playerConfig = config.find((c) => c.position === playerIndex);
-
-    if (!playerConfig) return null;
-
-    if (this.numPlayers === 3) {
-      // En el caso de 3 jugadores, cada uno apunta a la esquina vacía opuesta
-      const emptyCorners = new Set([2, 3, 4]); // Esquinas inferiores
-      const usedCorners = new Set(config.map((c) => c.position));
-      return [...emptyCorners].find((corner) => !usedCorners.has(corner));
-    }
-
-    return playerConfig.opposite;
+    return this.oppositeCorners[this.numPlayers]?.[playerIndex] || null;
   }
 
   initializePlayerFields() {
@@ -312,12 +370,17 @@ class GameLogic {
     }
 
     const validMoves = this.getValidMoves(from);
+    console.log(`Movimientos válidos para posición ${from}:`, validMoves);
+
     if (!validMoves.includes(to)) {
+      console.log(
+        `Movimiento inválido: ${to} no está en los movimientos válidos`
+      );
       return { success: false, message: "Movimiento inválido" };
     }
 
-    // Realizar movimiento
     if (!this.board.makeMove(from, to)) {
+      console.log("Error al realizar el movimiento");
       return { success: false, message: "Error al mover" };
     }
 
@@ -350,40 +413,55 @@ class GameLogic {
   getValidMoves(position) {
     const piece = this.board.board[position];
     if (piece === null || !this.activePlayers.has(piece)) {
-      return [];
-    }
-
-    // Obtener la configuración del jugador actual
-    const playerConfig = this.playerConfigurations[
-      this.numPlayers
-    ].players.find((p) => p.index === piece);
-
-    if (!playerConfig) {
+      console.log("No hay pieza válida o no es un jugador activo");
       return [];
     }
 
     // Obtener todos los movimientos posibles
     const allMoves = this.board.getAllPossibleMoves(position);
+    console.log(`Movimientos posibles para posición ${position}:`, allMoves);
 
-    // Filtrar según el tipo de movimiento del jugador
+    // Obtener las coordenadas de la posición actual
+    const fromPos = this.board.positionMap.get(position);
+    if (!fromPos) {
+      console.log("No se encontró la posición en el mapa");
+      return [];
+    }
+
+    // Filtrar según las reglas de dirección específicas para cada jugador
     return allMoves.filter((to) => {
-      const fromPos = this.board.positionMap.get(position);
       const toPos = this.board.positionMap.get(to);
+      if (!toPos) return false;
+
       const dx = toPos.x - fromPos.x;
       const dy = toPos.y - fromPos.y;
 
-      switch (playerConfig.moves) {
-        case "down":
-          return dy > 0;
-        case "up":
-          return dy < 0;
-        case "left-and-diagonals":
-          return dx < 0 || (dx === 0 && dy !== 0);
-        case "right-and-diagonals":
-          return dx > 0 || (dx === 0 && dy !== 0);
-        default:
-          return false;
+      // Reglas de movimiento según el número de jugadores y la posición
+      switch (this.numPlayers) {
+        case 2:
+          if (piece === 0) {
+            // Rojo (arriba)
+            return dy > 0; // Solo hacia abajo
+          } else if (piece === 2) {
+            // Verde (abajo)
+            return dy < 0; // Solo hacia arriba
+          }
+          break;
+        case 3:
+          if (piece === 0) {
+            // Rojo (arriba)
+            return dy > 0; // Solo hacia abajo
+          } else if (piece === 1) {
+            // Amarillo (inferior derecha)
+            return dx < 0 || (dx === 0 && dy < 0); // Izquierda o arriba
+          } else if (piece === 5) {
+            // Naranja (superior derecha)
+            return dx < 0 || (dx === 0 && dy > 0); // Izquierda o abajo
+          }
+          break;
+        // ... casos similares para 4 y 6 jugadores ...
       }
+      return false;
     });
   }
 
@@ -396,15 +474,13 @@ class GameLogic {
   }
 
   checkWin(playerIndex) {
-    if (this.numPlayers === 3) {
-      // Para 3 jugadores, verificar si llegó a la esquina vacía opuesta
-      const targetCorner = this.getOppositeCorner(playerIndex);
-      return this.checkPlayerWinInCorner(playerIndex, targetCorner);
-    } else {
-      // Para 2, 4 y 6 jugadores, verificar la esquina opuesta
-      const oppositeIndex = this.getOppositeCorner(playerIndex);
-      return this.checkPlayerWinInCorner(playerIndex, oppositeIndex);
-    }
+    const targetCorner = this.getOppositeCorner(playerIndex);
+    if (!targetCorner) return false;
+
+    // Verificar que todas las posiciones objetivo estén ocupadas por el jugador
+    return targetCorner.positions.every(
+      (pos) => this.board.board[pos] === playerIndex
+    );
   }
   checkPlayerWinInCorner(playerIndex, targetCorner) {
     const targetPositions = this.board.getCornerPositions(targetCorner);
