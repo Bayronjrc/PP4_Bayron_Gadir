@@ -35,15 +35,20 @@ const gameController = {
   // Obtener lista de partidas disponibles
   getAvailableGames: async (req, res) => {
     try {
-      const games = await Game.find({
-        status: "waiting",
-        createdAt: { $gte: new Date(Date.now() - 180000) }, // Solo partidas creadas en los últimos 3 minutos
-      });
-      res.json(games);
+      const games = await Game.find(
+        {
+          status: "waiting",
+          createdAt: { $gte: new Date(Date.now() - 180000) },
+        }
+      ).select("gameId"); // Solo devuelve el campo gameId
+
+      res.json(games); // Enviamos los datos filtrados
     } catch (error) {
       res.status(500).json({ error: error.message });
     }
   },
+
+
 
   // Unirse a una partida
   joinGame: async (req, res) => {

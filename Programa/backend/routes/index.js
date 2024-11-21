@@ -7,6 +7,12 @@ const playerRoutes = require("./playerRoutes");
 router.use("/games", gameRoutes);
 router.use("/players", playerRoutes);
 
+
+// Endpoint de prueba
+router.get("/test", (req, res) => {
+  res.json({ message: "sirvo hp!" }); 
+});
+
 // Ruta de prueba/salud
 router.get("/health", (req, res) => {
   res.json({ status: "OK", timestamp: new Date() });

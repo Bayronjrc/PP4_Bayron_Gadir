@@ -1,7 +1,6 @@
-// src/socket.js
 import { io } from "socket.io-client";
 
-export const socket = io("http://localhost:5000", {
+export const socket = io("https://0c4c-2803-9810-5421-7210-3dde-512f-34eb-5d99.ngrok-free.app", {
   transports: ["websocket"],
   autoConnect: true,
 });

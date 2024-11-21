@@ -168,7 +168,7 @@ export default function ChineseCheckersBoard({ gameData }) {
       if (gameData?.players) {
         try {
           const registerPromises = gameData.players.map((player) =>
-            fetch("http://localhost:5000/api/players/register", {
+            fetch("https://0c4c-2803-9810-5421-7210-3dde-512f-34eb-5d99.ngrok-free.app/api/players/register", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({ nickname: player.nickname }),
@@ -385,7 +385,7 @@ export default function ChineseCheckersBoard({ gameData }) {
             PLAYER_COLORS[currentPlayer]?.text || "text-gray-800"
           }`}
         >
-          {players[currentPlayer]?.nickname || `Jugador ${currentPlayer + 1}`}
+          {players[currentPlayer]?.color || `Jugador ${currentPlayer + 1}`}
         </div>
       </div>
       <div className="bg-white p-8 rounded-lg shadow-lg">{renderBoard()}</div>
